@@ -3732,6 +3732,8 @@ BOOLEAN VioGpuAdapter::CreateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     {
         VioGpuDbgBreak();
         DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to init obj size = %d\n", __FUNCTION__, size));
+        m_CtrlQueue.DestroyResource(resid);
+        m_Idr.PutId(resid);
         delete obj;
         return FALSE;
     }
@@ -3739,6 +3741,8 @@ BOOLEAN VioGpuAdapter::CreateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     {
         VioGpuDbgBreak();
         DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to attach gpu object\n", __FUNCTION__));
+        m_CtrlQueue.DestroyResource(resid);
+        m_Idr.PutId(resid);
         delete obj;
         return FALSE;
     }
