@@ -562,7 +562,15 @@ UINT CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--> %s sgleft %d\n", __FUNCTION__, sgleft));
 
     Lock(&SavedIrql);
-    ret = AddBuf(&sg[0], outcnt, incnt, buf, NULL, 0);
+    // Use indirect descriptors if available
+    if (buf->desc && buf->desc_pa.QuadPart)
+    {
+        ret = AddBuf(&sg[0], outcnt, incnt, buf, buf->desc, buf->desc_pa.QuadPart);
+    }
+    else
+    {
+        ret = AddBuf(&sg[0], outcnt, incnt, buf, NULL, 0);
+    }
     Kick();
     Unlock(SavedIrql);
 
@@ -598,6 +606,38 @@ void VioGpuQueue::ReleaseBuffer(PGPU_VBUFFER buf)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
+void VioGpuBuf::AllocateIndirectDescriptors(_In_ PGPU_VBUFFER pbuf)
+{
+    PHYSICAL_ADDRESS low, high, skip;
+    low.QuadPart = 0;
+    high.QuadPart = (ULONGLONG)-1;
+    skip.QuadPart = 0;
+    pbuf->desc = reinterpret_cast<PVRING_DESC_ALIAS>(MmAllocateContiguousMemorySpecifyCache(PAGE_SIZE,
+                                                                                            low,
+                                                                                            high,
+                                                                                            skip,
+                                                                                            MmNonCached));
+    if (pbuf->desc)
+    {
+        RtlZeroMemory(pbuf->desc, PAGE_SIZE);
+        pbuf->desc_pa = MmGetPhysicalAddress(pbuf->desc);
+    }
+    else
+    {
+        pbuf->desc_pa.QuadPart = 0;
+    }
+}
+
+void VioGpuBuf::DeleteBuffer(_In_ PGPU_VBUFFER pbuf)
+{
+    if (pbuf->desc)
+    {
+        MmFreeContiguousMemory(pbuf->desc);
+        pbuf->desc = NULL;
+    }
+    delete[] reinterpret_cast<PBYTE>(pbuf);
+}
+
 BOOLEAN VioGpuBuf::Init(_In_ UINT cnt)
 {
     KIRQL OldIrql;
@@ -609,10 +649,11 @@ BOOLEAN VioGpuBuf::Init(_In_ UINT cnt)
     for (UINT i = 0; i < cnt; ++i)
     {
         PGPU_VBUFFER pvbuf = reinterpret_cast<PGPU_VBUFFER>(new (NonPagedPoolNx) BYTE[VBUFFER_SIZE]);
-        // FIXME
-        RtlZeroMemory(pvbuf, VBUFFER_SIZE);
         if (pvbuf)
         {
+            RtlZeroMemory(pvbuf, VBUFFER_SIZE);
+            AllocateIndirectDescriptors(pvbuf);
+
             KeAcquireSpinLock(&m_SpinLock, &OldIrql);
             InsertTailList(&m_FreeBufs, &pvbuf->list_entry);
             ++m_uCount;
@@ -642,7 +683,7 @@ void VioGpuBuf::Close(void)
             ASSERT(pvbuf);
             ASSERT(pvbuf->resp_size <= MAX_INLINE_RESP_SIZE);
 
-            delete[] reinterpret_cast<PBYTE>(pvbuf);
+            DeleteBuffer(pvbuf);
             --m_uCount;
         }
     }
@@ -669,7 +710,7 @@ void VioGpuBuf::Close(void)
                 pbuf->data_size = 0;
             }
 
-            delete[] reinterpret_cast<PBYTE>(pbuf);
+            DeleteBuffer(pbuf);
             --m_uCount;
         }
     }
@@ -708,16 +749,27 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
     if (IsListEmpty(&m_FreeBufs))
     {
         pbuf = reinterpret_cast<PGPU_VBUFFER>(new (NonPagedPoolNx) BYTE[VBUFFER_SIZE]);
-        ++m_uCount;
+        if (pbuf)
+        {
+            RtlZeroMemory(pbuf, VBUFFER_SIZE);
+            AllocateIndirectDescriptors(pbuf);
+            ++m_uCount;
+        }
     }
     else
     {
         pListItem = RemoveHeadList(&m_FreeBufs);
         pbuf = CONTAINING_RECORD(pListItem, GPU_VBUFFER, list_entry);
+        // Save indirect descriptor info before zeroing
+        PVRING_DESC_ALIAS saved_desc = pbuf->desc;
+        PHYSICAL_ADDRESS saved_desc_pa = pbuf->desc_pa;
+        RtlZeroMemory(pbuf, VBUFFER_SIZE);
+        // Restore indirect descriptor info
+        pbuf->desc = saved_desc;
+        pbuf->desc_pa = saved_desc_pa;
     }
 
     ASSERT(pbuf);
-    memset(pbuf, 0, VBUFFER_SIZE);
     ASSERT(size <= MAX_INLINE_CMD_SIZE);
 
     pbuf->buf = (char *)((ULONG_PTR)pbuf + sizeof(*pbuf));
@@ -800,7 +852,7 @@ void VioGpuBuf::FreeBuf(_In_ PGPU_VBUFFER pbuf)
 
     if (m_uCount > m_uCountMin)
     {
-        delete[] reinterpret_cast<PBYTE>(pbuf);
+        DeleteBuffer(pbuf);
         --m_uCount;
     }
     else
@@ -912,7 +964,8 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
         {
             MmProbeAndLockPages(m_pMdl, KernelMode, IoWriteAccess);
         }
-#pragma prefast(suppress : __WARNING_EXCEPTIONEXECUTEHANDLER, "try/except is only able to protect against user-mode errors and these are the only errors we try to catch here");
+#pragma prefast(suppress : __WARNING_EXCEPTIONEXECUTEHANDLER,                                                          \
+                "try/except is only able to protect against user-mode errors and these are the only errors we try to catch here");
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("%s Failed to lock pages with error %x\n", __FUNCTION__, GetExceptionCode()));

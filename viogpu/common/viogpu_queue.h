@@ -40,6 +40,15 @@ typedef struct virtio_gpu_config
 } GPU_CONFIG, *PGPU_CONFIG;
 #pragma pack()
 
+// Indirect descriptor alias (16 bytes, same as vring_desc)
+typedef struct _VRING_DESC_ALIAS
+{
+    union {
+        ULONGLONG data[2];
+        UCHAR chars[SIZE_OF_SINGLE_INDIRECT_DESC];
+    } u;
+} VRING_DESC_ALIAS, *PVRING_DESC_ALIAS;
+
 // #pragma pack(1)
 typedef struct virtio_gpu_vbuffer
 {
@@ -57,6 +66,10 @@ typedef struct virtio_gpu_vbuffer
     void *complete_ctx;
 
     bool auto_release;
+
+    // Indirect descriptor table for large transfers
+    PVRING_DESC_ALIAS desc;
+    PHYSICAL_ADDRESS desc_pa;
 } GPU_VBUFFER, *PGPU_VBUFFER;
 // #pragma pack()
 
@@ -75,6 +88,8 @@ class VioGpuBuf
 
   private:
     void Close(void);
+    void AllocateIndirectDescriptors(_In_ PGPU_VBUFFER pbuf);
+    void DeleteBuffer(_In_ PGPU_VBUFFER pbuf);
 
   private:
     LIST_ENTRY m_FreeBufs;
