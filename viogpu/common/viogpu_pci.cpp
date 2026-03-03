@@ -23,6 +23,7 @@
  *
  **********************************************************************/
 #include "viogpu.h"
+#include "baseobj.h"
 #include "..\viogpudo\viogpudo.h"
 #if !DBG
 #include "viogpu_pci.tmh"
@@ -495,6 +496,115 @@ PVOID CPciResources::GetMappedAddress(UINT bar, ULONG uOffset)
 }
 
 PAGED_CODE_SEG_BEGIN
+
+BOOLEAN CBarMemPool::Init(PHYSICAL_ADDRESS BasePA, ULONG TotalSize)
+{
+    PAGED_CODE();
+
+    ASSERT(TotalSize);
+    m_BasePA = BasePA;
+    m_TotalPages = TotalSize / PAGE_SIZE;
+
+    if (m_TotalPages == 0)
+    {
+        return FALSE;
+    }
+
+    ULONG bitmapBytes = (m_TotalPages + 7) / 8;
+    m_pBitmap = reinterpret_cast<PUCHAR>(new (NonPagedPoolNx) BYTE[bitmapBytes]);
+    if (!m_pBitmap)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(m_pBitmap, bitmapBytes);
+
+    NTSTATUS Status = MapFrameBuffer(m_BasePA, m_TotalPages * PAGE_SIZE, &m_pMappedVA);
+    if (!NT_SUCCESS(Status))
+    {
+        delete[] reinterpret_cast<PBYTE>(m_pBitmap);
+        m_pBitmap = NULL;
+        return FALSE;
+    }
+    m_bMapped = TRUE;
+    m_FreePages = m_TotalPages;
+
+    return TRUE;
+}
+
+void CBarMemPool::Close()
+{
+    if (m_bMapped && m_pMappedVA)
+    {
+        UnmapFrameBuffer(m_pMappedVA, m_TotalPages * PAGE_SIZE);
+        m_pMappedVA = NULL;
+        m_bMapped = FALSE;
+    }
+
+    delete[] reinterpret_cast<PBYTE>(m_pBitmap);
+    m_pBitmap = NULL;
+    m_TotalPages = 0;
+    m_FreePages = 0;
+}
+
+BOOLEAN CBarMemPool::Allocate(ULONG pages, MemRange *pRange)
+{
+    if (!m_pBitmap || pages == 0 || pages > m_FreePages)
+    {
+        return FALSE;
+    }
+
+    ULONG run = 0;
+    ULONG start = 0;
+
+    for (ULONG i = 0; i < m_TotalPages; i++)
+    {
+        BOOLEAN used = (m_pBitmap[i / 8] >> (i % 8)) & 1;
+        if (used)
+        {
+            run = 0;
+        }
+        else
+        {
+            if (run == 0)
+            {
+                start = i;
+            }
+            run++;
+            if (run >= pages)
+            {
+                for (ULONG j = start; j < start + pages; j++)
+                {
+                    m_pBitmap[j / 8] |= (1 << (j % 8));
+                }
+                pRange->Address.QuadPart = m_BasePA.QuadPart + (ULONGLONG)start * PAGE_SIZE;
+                pRange->Pages = pages;
+                m_FreePages -= pages;
+                return TRUE;
+            }
+        }
+    }
+
+    return FALSE;
+}
+
+void CBarMemPool::Free(const MemRange *pRange)
+{
+    if (!m_pBitmap || !pRange)
+    {
+        return;
+    }
+
+    ULONG offset = (ULONG)((pRange->Address.QuadPart - m_BasePA.QuadPart) / PAGE_SIZE);
+    for (ULONG j = offset; j < offset + pRange->Pages; j++)
+    {
+        if (j < m_TotalPages)
+        {
+            m_pBitmap[j / 8] &= ~(1 << (j % 8));
+        }
+    }
+    m_FreePages += pRange->Pages;
+}
+
 NTSTATUS
 MapFrameBuffer(_In_ PHYSICAL_ADDRESS PhysicalAddress,
                _In_ ULONG Length,

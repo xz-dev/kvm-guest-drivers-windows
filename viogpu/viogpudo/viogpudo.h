@@ -123,6 +123,14 @@ class VioGpuAdapter : IVioGpuPCI
     {
         return m_FrameSegment.GetSize();
     }
+    SIZE_T GetMaxFrameBufferSize(void)
+    {
+        return m_FrameSegment.GetMaxExpandableSize();
+    }
+    BOOLEAN IsUsingBarMemory(void)
+    {
+        return m_FrameSegment.IsBarMemory();
+    }
     PDXGKRNL_INTERFACE GetDxgkInterface(void);
 
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
@@ -203,6 +211,7 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuIdr m_Idr;
     VioGpuObj *m_pFrameBuf;
     VioGpuObj *m_pCursorBuf;
+    CBarMemPool m_BarPool;
     VioGpuMemSegment m_CursorSegment;
     VioGpuMemSegment m_FrameSegment;
     volatile ULONG m_PendingWorks;

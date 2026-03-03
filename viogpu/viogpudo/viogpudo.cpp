@@ -769,14 +769,14 @@ NTSTATUS VioGpuDod::IsSupportedVidPn(_Inout_ DXGKARG_ISSUPPORTEDVIDPN *pIsSuppor
                                   pPinnedVidPnSourceModeInfo->Format.Graphics.PrimSurfSize.cy *
                                   (BPPFromPixelFormat(pPinnedVidPnSourceModeInfo->Format.Graphics.PixelFormat) /
                                    BITS_PER_BYTE);
-            SIZE_T SegmentSize = m_pHWDevice->GetFrameSegmentSize();
-            if (SegmentSize > 0 && RequiredSize > SegmentSize)
+            SIZE_T MaxSize = m_pHWDevice->GetMaxFrameBufferSize();
+            if (MaxSize > 0 && RequiredSize > MaxSize)
             {
                 DbgPrint(TRACE_LEVEL_WARNING,
-                         ("<--- %s Resolution requires %llu bytes, segment size is %llu\n",
+                         ("<--- %s Resolution requires %llu bytes, max available is %llu\n",
                           __FUNCTION__,
                           (ULONGLONG)RequiredSize,
-                          (ULONGLONG)SegmentSize));
+                          (ULONGLONG)MaxSize));
                 bReject = TRUE;
             }
             pVidPnSourceModeSetInterface->pfnReleaseModeInfo(hVidPnSourceModeSet, pPinnedVidPnSourceModeInfo);
@@ -1984,10 +1984,30 @@ VOID VioGpuDod::SystemDisplayWrite(_In_reads_bytes_(SourceHeight *SourceStride) 
         BLT_INFO SrcBltInfo = {0};
         BLT_INFO DstBltInfo = {0};
 
+        LONG MaxWidth = m_CurrentMode.DispInfo.Width;
+        LONG MaxHeight = m_CurrentMode.DispInfo.Height;
+
+        SIZE_T SegmentSize = m_pHWDevice->GetFrameSegmentSize();
+        if (SegmentSize > 0 && m_CurrentMode.DispInfo.Pitch > 0)
+        {
+            LONG SegmentMaxHeight = (LONG)(SegmentSize / m_CurrentMode.DispInfo.Pitch);
+            if (SegmentMaxHeight < MaxHeight)
+            {
+                MaxHeight = SegmentMaxHeight;
+            }
+        }
+
         Rect.left = PositionX;
         Rect.top = PositionY;
         Rect.right = Rect.left + SourceWidth;
         Rect.bottom = Rect.top + SourceHeight;
+
+        if (Rect.right > MaxWidth)
+            Rect.right = MaxWidth;
+        if (Rect.bottom > MaxHeight)
+            Rect.bottom = MaxHeight;
+        if (Rect.left >= Rect.right || Rect.top >= Rect.bottom)
+            return;
 
         DstBltInfo.pBits = m_CurrentMode.FrameBuffer;
         DstBltInfo.Pitch = m_CurrentMode.DispInfo.Pitch;
@@ -2698,23 +2718,47 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         pDispInfo->PhysicAddress = fb_pa;
     }
 
-    if (fb_size < req_size)
+    if (m_pVioGpuDod->IsUsePhysicalMemory() && fb_pa.QuadPart != 0 && fb_size > 0)
+    {
+        if (m_BarPool.Init(fb_pa, fb_size))
+        {
+            if (!m_FrameSegment.InitFromPool(req_size, &m_BarPool))
+            {
+                DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to allocate FB from BAR pool\n", __FUNCTION__));
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                VioGpuDbgBreak();
+                return status;
+            }
+            DbgPrint(TRACE_LEVEL_INFORMATION,
+                     ("%s using BAR memory: PA=0x%llx size=%llu req=%llu\n",
+                      __FUNCTION__,
+                      fb_pa.QuadPart,
+                      (ULONGLONG)fb_size,
+                      (ULONGLONG)req_size));
+        }
+        else
+        {
+            DbgPrint(TRACE_LEVEL_WARNING, ("%s BAR pool init failed, falling back to system memory\n", __FUNCTION__));
+            m_pVioGpuDod->SetUsePhysicalMemory(FALSE);
+        }
+    }
+
+    if (!m_FrameSegment.GetSize())
     {
         m_pVioGpuDod->SetUsePhysicalMemory(FALSE);
-    }
-
-    if (!m_pVioGpuDod->IsUsePhysicalMemory() || fb_pa.QuadPart == 0 || fb_size < req_size)
-    {
-        fb_pa.QuadPart = 0LL;
-        fb_size = max(req_size, fb_size);
-    }
-
-    if (!m_FrameSegment.Init(fb_size, &fb_pa))
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to allocate FB memory segment\n", __FUNCTION__));
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        VioGpuDbgBreak();
-        return status;
+        PHYSICAL_ADDRESS nullPA = {0};
+        UINT alloc_size = max(req_size, fb_size);
+        if (!m_FrameSegment.Init(alloc_size, &nullPA))
+        {
+            DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to allocate FB memory segment\n", __FUNCTION__));
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            VioGpuDbgBreak();
+            return status;
+        }
+        DbgPrint(TRACE_LEVEL_INFORMATION,
+                 ("%s using system memory: size=%llu\n",
+                  __FUNCTION__,
+                  (ULONGLONG)alloc_size));
     }
 
     if (!m_CursorSegment.Init(POINTER_SIZE * POINTER_SIZE * 4, NULL))
@@ -2750,6 +2794,7 @@ NTSTATUS VioGpuAdapter::HWClose(void)
 
     m_FrameSegment.Close();
     m_CursorSegment.Close();
+    m_BarPool.Close();
 
     DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s\n", __FUNCTION__));
 
@@ -2819,6 +2864,19 @@ BOOLEAN FindUpdateRect(_In_ ULONG NumMoves,
     return updated;
 }
 
+static BOOLEAN ClipRect(_Inout_ RECT *pRect, _In_ LONG MaxWidth, _In_ LONG MaxHeight)
+{
+    if (pRect->left < 0)
+        pRect->left = 0;
+    if (pRect->top < 0)
+        pRect->top = 0;
+    if (pRect->right > MaxWidth)
+        pRect->right = MaxWidth;
+    if (pRect->bottom > MaxHeight)
+        pRect->bottom = MaxHeight;
+    return (pRect->right > pRect->left && pRect->bottom > pRect->top);
+}
+
 NTSTATUS VioGpuAdapter::ExecutePresentDisplayOnly(_In_ BYTE *DstAddr,
                                                   _In_ UINT DstBitPerPixel,
                                                   _In_ BYTE *SrcAddr,
@@ -2839,6 +2897,22 @@ NTSTATUS VioGpuAdapter::ExecutePresentDisplayOnly(_In_ BYTE *DstAddr,
     UINT resid = 0;
     RECT updrect = {0};
     ULONG offset = 0UL;
+
+    SIZE_T SegmentSize = m_FrameSegment.GetSize();
+    LONG MaxWidth = pModeCur->SrcModeWidth;
+    LONG MaxHeight = pModeCur->SrcModeHeight;
+
+    if (SegmentSize > 0 && pModeCur->DispInfo.Pitch > 0)
+    {
+        LONG SegmentMaxHeight = (LONG)(SegmentSize / pModeCur->DispInfo.Pitch);
+        if (SegmentMaxHeight < MaxHeight)
+        {
+            DbgPrint(TRACE_LEVEL_WARNING,
+                     ("%s clipping height from %d to %d (segment size %llu)\n",
+                      __FUNCTION__, MaxHeight, SegmentMaxHeight, (ULONGLONG)SegmentSize));
+            MaxHeight = SegmentMaxHeight;
+        }
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE,
              ("SrcBytesPerPixel = %d DstBitPerPixel = %d (%dx%d)\n",
@@ -2875,14 +2949,20 @@ NTSTATUS VioGpuAdapter::ExecutePresentDisplayOnly(_In_ BYTE *DstAddr,
 
     for (UINT i = 0; i < NumMoves; i++)
     {
-        RECT *pDestRect = &pMoves[i].DestRect;
-        BltBits(&DstBltInfo, &SrcBltInfo, pDestRect);
+        RECT ClippedRect = pMoves[i].DestRect;
+        if (ClipRect(&ClippedRect, MaxWidth, MaxHeight))
+        {
+            BltBits(&DstBltInfo, &SrcBltInfo, &ClippedRect);
+        }
     }
 
     for (UINT i = 0; i < NumDirtyRects; i++)
     {
-        RECT *pRect = &pDirtyRect[i];
-        BltBits(&DstBltInfo, &SrcBltInfo, pRect);
+        RECT ClippedRect = pDirtyRect[i];
+        if (ClipRect(&ClippedRect, MaxWidth, MaxHeight))
+        {
+            BltBits(&DstBltInfo, &SrcBltInfo, &ClippedRect);
+        }
     }
     if (!FindUpdateRect(NumMoves, pMoves, NumDirtyRects, pDirtyRect, Rotation, &updrect))
     {
@@ -2935,7 +3015,16 @@ VOID VioGpuAdapter::BlackOutScreen(CURRENT_MODE *pCurrentMod)
 
         if (pDst)
         {
-            RtlZeroMemory(pDst, (ULONGLONG)ScreenHeight * ScreenPitch);
+            SIZE_T SegmentSize = m_FrameSegment.GetSize();
+            SIZE_T ClearSize = (ULONGLONG)ScreenHeight * ScreenPitch;
+            if (SegmentSize > 0 && ClearSize > SegmentSize)
+            {
+                DbgPrint(TRACE_LEVEL_WARNING,
+                         ("%s clipping clear size from %llu to %llu\n",
+                          __FUNCTION__, (ULONGLONG)ClearSize, (ULONGLONG)SegmentSize));
+                ClearSize = SegmentSize;
+            }
+            RtlZeroMemory(pDst, ClearSize);
         }
 
         // FIXME!!! rotation
@@ -4006,12 +4095,18 @@ BOOLEAN VioGpuAdapter::GpuObjectAttach(UINT res_id, VioGpuObj *obj)
 {
     PAGED_CODE();
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-    PGPU_MEM_ENTRY ents = NULL;
-    PSCATTER_GATHER_LIST sgl = NULL;
-    UINT size = 0;
-    sgl = obj->GetSGList();
-    size = sizeof(GPU_MEM_ENTRY) * sgl->NumberOfElements;
-    ents = reinterpret_cast<PGPU_MEM_ENTRY>(new (NonPagedPoolNx) BYTE[size]);
+
+    MemRange *ranges = obj->GetRanges();
+    UINT rangeCount = obj->GetRangeCount();
+
+    UINT totalPages = 0;
+    for (UINT i = 0; i < rangeCount; i++)
+    {
+        totalPages += ranges[i].Pages;
+    }
+
+    UINT size = sizeof(GPU_MEM_ENTRY) * totalPages;
+    PGPU_MEM_ENTRY ents = reinterpret_cast<PGPU_MEM_ENTRY>(new (NonPagedPoolNx) BYTE[size]);
 
     if (!ents)
     {
@@ -4019,20 +4114,24 @@ BOOLEAN VioGpuAdapter::GpuObjectAttach(UINT res_id, VioGpuObj *obj)
                  ("<--- %s cannot allocate memory %x bytes numberofentries = %d\n",
                   __FUNCTION__,
                   size,
-                  sgl->NumberOfElements));
+                  totalPages));
         return FALSE;
     }
-    // FIXME
     RtlZeroMemory(ents, size);
 
-    for (UINT i = 0; i < sgl->NumberOfElements; i++)
+    UINT entIndex = 0;
+    for (UINT i = 0; i < rangeCount; i++)
     {
-        ents[i].addr = sgl->Elements[i].Address.QuadPart;
-        ents[i].length = sgl->Elements[i].Length;
-        ents[i].padding = 0;
+        for (ULONG j = 0; j < ranges[i].Pages; j++)
+        {
+            ents[entIndex].addr = ranges[i].Address.QuadPart + (ULONGLONG)j * PAGE_SIZE;
+            ents[entIndex].length = PAGE_SIZE;
+            ents[entIndex].padding = 0;
+            entIndex++;
+        }
     }
 
-    m_CtrlQueue.AttachBacking(res_id, ents, sgl->NumberOfElements);
+    m_CtrlQueue.AttachBacking(res_id, ents, totalPages);
     obj->SetId(res_id);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return TRUE;

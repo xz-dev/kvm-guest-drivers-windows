@@ -98,24 +98,35 @@ class VioGpuMemSegment
         return m_pVAddr;
     }
     PHYSICAL_ADDRESS GetPhysicalAddress(void);
-    PSCATTER_GATHER_LIST GetSGList(void)
+    MemRange *GetRanges(void)
     {
-        return m_pSGList;
+        return m_pRanges;
+    }
+    UINT GetRangeCount(void)
+    {
+        return m_nRanges;
     }
     BOOLEAN Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr);
-    BOOLEAN IsSystemMemory(void)
-    {
-        return m_bSystemMemory;
-    }
+    BOOLEAN InitFromPool(_In_ UINT size, _In_ CBarMemPool *pPool);
+    BOOLEAN Expand(_In_ UINT newSize);
+    BOOLEAN IsSystemMemory(void) { return m_bSystemMemory; }
+    BOOLEAN IsBarMemory(void) { return m_pBarPool != NULL; }
+    SIZE_T GetMaxExpandableSize(void);
     void Close(void);
 
   private:
+    BOOLEAN RebuildMappingFromRanges();
+    void CloseBarRanges();
+
     BOOLEAN m_bSystemMemory;
     BOOLEAN m_bMapped;
-    PSCATTER_GATHER_LIST m_pSGList;
     PVOID m_pVAddr;
     PMDL m_pMdl;
     SIZE_T m_Size;
+
+    CBarMemPool *m_pBarPool;
+    MemRange *m_pRanges;
+    UINT m_nRanges;
 };
 
 class VioGpuObj
@@ -136,9 +147,13 @@ class VioGpuObj
     {
         return m_Size;
     }
-    PSCATTER_GATHER_LIST GetSGList(void)
+    MemRange *GetRanges(void)
     {
-        return m_pSegment ? m_pSegment->GetSGList() : NULL;
+        return m_pSegment ? m_pSegment->GetRanges() : NULL;
+    }
+    UINT GetRangeCount(void)
+    {
+        return m_pSegment ? m_pSegment->GetRangeCount() : 0;
     }
     PHYSICAL_ADDRESS GetPhysicalAddress(void)
     {

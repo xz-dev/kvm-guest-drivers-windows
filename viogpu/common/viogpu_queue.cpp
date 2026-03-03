@@ -845,12 +845,14 @@ VioGpuMemSegment::VioGpuMemSegment(void)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    m_pSGList = NULL;
     m_pVAddr = NULL;
     m_pMdl = NULL;
     m_bSystemMemory = FALSE;
     m_bMapped = FALSE;
     m_Size = 0;
+    m_pBarPool = NULL;
+    m_pRanges = NULL;
+    m_nRanges = 0;
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
@@ -874,7 +876,6 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
     ASSERT(size);
     PVOID buf = NULL;
     UINT pages = BYTES_TO_PAGES(size);
-    UINT sglsize = sizeof(SCATTER_GATHER_LIST) + (sizeof(SCATTER_GATHER_ELEMENT) * pages);
     size = pages * PAGE_SIZE;
 
     if ((pPAddr == NULL) || pPAddr->QuadPart == 0LL)
@@ -912,7 +913,8 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
         {
             MmProbeAndLockPages(m_pMdl, KernelMode, IoWriteAccess);
         }
-#pragma prefast(suppress : __WARNING_EXCEPTIONEXECUTEHANDLER, "try/except is only able to protect against user-mode errors and these are the only errors we try to catch here");
+#pragma prefast(suppress : __WARNING_EXCEPTIONEXECUTEHANDLER,                                                          \
+                "try/except is only able to protect against user-mode errors and these are the only errors we try to catch here");
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("%s Failed to lock pages with error %x\n", __FUNCTION__, GetExceptionCode()));
@@ -920,15 +922,15 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
             return FALSE;
         }
     }
-    m_pSGList = reinterpret_cast<PSCATTER_GATHER_LIST>(new (NonPagedPoolNx) BYTE[sglsize]);
-    m_pSGList->NumberOfElements = 0;
-    m_pSGList->Reserved = 0;
-    //       m_pSAddr = reinterpret_cast<BYTE*>
-    //    (MmGetSystemAddressForMdlSafe(m_pMdl, NormalPagePriority | MdlMappingNoExecute));
 
-    RtlZeroMemory(m_pSGList, sglsize);
+    m_pRanges = reinterpret_cast<MemRange *>(new (NonPagedPoolNx) BYTE[pages * sizeof(MemRange)]);
+    if (!m_pRanges)
+    {
+        DbgPrint(TRACE_LEVEL_FATAL, ("%s insufficient resources to allocate ranges\n", __FUNCTION__));
+        return FALSE;
+    }
+
     buf = PAGE_ALIGN(m_pVAddr);
-
     for (UINT i = 0; i < pages; ++i)
     {
         PHYSICAL_ADDRESS pa = {0};
@@ -939,10 +941,10 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
             DbgPrint(TRACE_LEVEL_FATAL, ("%s Invalid PA buf = %p element %d\n", __FUNCTION__, buf, i));
             break;
         }
-        m_pSGList->Elements[i].Address = pa;
-        m_pSGList->Elements[i].Length = PAGE_SIZE;
+        m_pRanges[i].Address = pa;
+        m_pRanges[i].Pages = 1;
         buf = (PVOID)((LONG_PTR)(buf) + PAGE_SIZE);
-        m_pSGList->NumberOfElements++;
+        m_nRanges++;
     }
     m_Size = size;
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
@@ -967,37 +969,220 @@ PHYSICAL_ADDRESS VioGpuMemSegment::GetPhysicalAddress(void)
     return pa;
 }
 
+SIZE_T VioGpuMemSegment::GetMaxExpandableSize(void)
+{
+    if (m_pBarPool)
+    {
+        return m_Size + m_pBarPool->GetFreeSize();
+    }
+    return m_Size;
+}
+
 void VioGpuMemSegment::Close(void)
 {
     PAGED_CODE();
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    if (m_pMdl)
+    if (m_pBarPool)
     {
+        CloseBarRanges();
+    }
+    else
+    {
+        if (m_pMdl)
+        {
+            if (m_bSystemMemory)
+            {
+                MmUnlockPages(m_pMdl);
+            }
+            IoFreeMdl(m_pMdl);
+            m_pMdl = NULL;
+        }
+
         if (m_bSystemMemory)
         {
-            MmUnlockPages(m_pMdl);
+            delete[] reinterpret_cast<PBYTE>(m_pVAddr);
         }
+        else
+        {
+            UnmapFrameBuffer(m_pVAddr, (ULONG)m_Size);
+            m_bMapped = FALSE;
+        }
+        m_pVAddr = NULL;
+
+        delete[] reinterpret_cast<PBYTE>(m_pRanges);
+        m_pRanges = NULL;
+        m_nRanges = 0;
+    }
+
+    m_Size = 0;
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+}
+
+BOOLEAN VioGpuMemSegment::InitFromPool(_In_ UINT size, _In_ CBarMemPool *pPool)
+{
+    PAGED_CODE();
+
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s size=%u\n", __FUNCTION__, size));
+
+    ASSERT(size);
+    ASSERT(pPool);
+
+    UINT pages = BYTES_TO_PAGES(size);
+    size = pages * PAGE_SIZE;
+
+    m_pBarPool = pPool;
+
+    m_pRanges = reinterpret_cast<MemRange *>(new (NonPagedPoolNx) BYTE[sizeof(MemRange)]);
+    if (!m_pRanges)
+    {
+        return FALSE;
+    }
+
+    if (!pPool->Allocate(pages, &m_pRanges[0]))
+    {
+        delete[] reinterpret_cast<PBYTE>(m_pRanges);
+        m_pRanges = NULL;
+        return FALSE;
+    }
+    m_nRanges = 1;
+    m_Size = size;
+
+    if (!RebuildMappingFromRanges())
+    {
+        CloseBarRanges();
+        return FALSE;
+    }
+
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s size=%Iu ranges=%u\n", __FUNCTION__, m_Size, m_nRanges));
+    return TRUE;
+}
+
+BOOLEAN VioGpuMemSegment::Expand(_In_ UINT newSize)
+{
+    PAGED_CODE();
+
+    ASSERT(m_pBarPool);
+    if (!m_pBarPool)
+    {
+        return FALSE;
+    }
+
+    UINT newPages = BYTES_TO_PAGES(newSize);
+    newSize = newPages * PAGE_SIZE;
+
+    if (newSize <= m_Size)
+    {
+        return TRUE;
+    }
+
+    UINT currentPages = (UINT)(m_Size / PAGE_SIZE);
+    UINT additionalPages = newPages - currentPages;
+
+    MemRange newRange;
+    if (!m_pBarPool->Allocate(additionalPages, &newRange))
+    {
+        return FALSE;
+    }
+
+    UINT totalRanges = m_nRanges + 1;
+    MemRange *pNewArray = reinterpret_cast<MemRange *>(new (NonPagedPoolNx) BYTE[totalRanges * sizeof(MemRange)]);
+    if (!pNewArray)
+    {
+        m_pBarPool->Free(&newRange);
+        return FALSE;
+    }
+
+    if (m_nRanges > 0)
+    {
+        RtlCopyMemory(pNewArray, m_pRanges, m_nRanges * sizeof(MemRange));
+    }
+    pNewArray[m_nRanges] = newRange;
+
+    delete[] reinterpret_cast<PBYTE>(m_pRanges);
+    m_pRanges = pNewArray;
+    m_nRanges = totalRanges;
+    m_Size = newSize;
+
+    if (!RebuildMappingFromRanges())
+    {
+        return FALSE;
+    }
+
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s size=%Iu ranges=%u\n", __FUNCTION__, m_Size, m_nRanges));
+    return TRUE;
+}
+
+BOOLEAN VioGpuMemSegment::RebuildMappingFromRanges()
+{
+    if (m_pVAddr && m_pMdl)
+    {
+        MmUnmapLockedPages(m_pVAddr, m_pMdl);
+        m_pVAddr = NULL;
+    }
+    if (m_pMdl)
+    {
         IoFreeMdl(m_pMdl);
         m_pMdl = NULL;
     }
 
-    if (m_bSystemMemory)
+    if (m_nRanges == 0 || m_Size == 0)
     {
-        delete[] reinterpret_cast<PBYTE>(m_pVAddr);
+        return TRUE;
     }
-    else
+
+    m_pMdl = IoAllocateMdl(NULL, (ULONG)m_Size, FALSE, FALSE, NULL);
+    if (!m_pMdl)
     {
-        UnmapFrameBuffer(m_pVAddr, (ULONG)m_Size);
-        m_bMapped = FALSE;
+        return FALSE;
+    }
+
+    PPFN_NUMBER pfnArray = MmGetMdlPfnArray(m_pMdl);
+    UINT pfnIndex = 0;
+
+    for (UINT i = 0; i < m_nRanges; i++)
+    {
+        PFN_NUMBER basePfn = (PFN_NUMBER)(m_pRanges[i].Address.QuadPart / PAGE_SIZE);
+
+        for (ULONG j = 0; j < m_pRanges[i].Pages; j++)
+        {
+            pfnArray[pfnIndex++] = basePfn + j;
+        }
+    }
+
+    m_pMdl->MdlFlags |= MDL_PAGES_LOCKED;
+    m_pVAddr = MmMapLockedPagesSpecifyCache(m_pMdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+
+    return (m_pVAddr != NULL);
+}
+
+void VioGpuMemSegment::CloseBarRanges()
+{
+    if (m_pVAddr && m_pMdl)
+    {
+        MmUnmapLockedPages(m_pVAddr, m_pMdl);
     }
     m_pVAddr = NULL;
 
-    delete[] reinterpret_cast<PBYTE>(m_pSGList);
-    m_pSGList = NULL;
+    if (m_pMdl)
+    {
+        IoFreeMdl(m_pMdl);
+        m_pMdl = NULL;
+    }
 
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    if (m_pBarPool && m_pRanges)
+    {
+        for (UINT i = 0; i < m_nRanges; i++)
+        {
+            m_pBarPool->Free(&m_pRanges[i]);
+        }
+    }
+
+    delete[] reinterpret_cast<PBYTE>(m_pRanges);
+    m_pRanges = NULL;
+    m_nRanges = 0;
+    m_pBarPool = NULL;
 }
 
 VioGpuObj::VioGpuObj(void)
@@ -1039,9 +1224,17 @@ BOOLEAN VioGpuObj::Init(_In_ UINT size, VioGpuMemSegment *pSegment)
     size = pages * PAGE_SIZE;
     if (size > pSegment->GetSize())
     {
-        DbgPrint(TRACE_LEVEL_FATAL,
-                 ("<--- %s segment size too small = %Iu (%u)\n", __FUNCTION__, pSegment->GetSize(), size));
-        return FALSE;
+        if (pSegment->IsBarMemory() && pSegment->Expand(size))
+        {
+            DbgPrint(TRACE_LEVEL_INFORMATION,
+                     ("%s expanded segment from %Iu to %u\n", __FUNCTION__, pSegment->GetSize(), size));
+        }
+        else
+        {
+            DbgPrint(TRACE_LEVEL_FATAL,
+                     ("<--- %s segment size too small = %Iu (%u)\n", __FUNCTION__, pSegment->GetSize(), size));
+            return FALSE;
+        }
     }
     m_pSegment = pSegment;
     m_Size = size;

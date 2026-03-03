@@ -103,6 +103,42 @@ class CPciResources
     CPciBar m_Bars[PCI_TYPE0_ADDRESSES];
 };
 
+struct MemRange
+{
+    PHYSICAL_ADDRESS Address;
+    ULONG Pages;
+};
+
+class CBarMemPool
+{
+  public:
+    CBarMemPool() : m_BasePA(), m_TotalPages(0), m_FreePages(0), m_pBitmap(NULL), m_pMappedVA(NULL), m_bMapped(FALSE)
+    {
+    }
+    ~CBarMemPool()
+    {
+        Close();
+    }
+
+    BOOLEAN Init(PHYSICAL_ADDRESS BasePA, ULONG TotalSize);
+    void Close();
+
+    BOOLEAN Allocate(ULONG pages, MemRange *pRange);
+    void Free(const MemRange *pRange);
+
+    SIZE_T GetTotalSize(void) const { return (SIZE_T)m_TotalPages * PAGE_SIZE; }
+    SIZE_T GetFreeSize(void) const { return (SIZE_T)m_FreePages * PAGE_SIZE; }
+    BOOLEAN IsInitialized(void) const { return m_pBitmap != NULL; }
+
+  private:
+    PHYSICAL_ADDRESS m_BasePA;
+    ULONG m_TotalPages;
+    ULONG m_FreePages;
+    PUCHAR m_pBitmap;
+    PVOID m_pMappedVA;
+    BOOLEAN m_bMapped;
+};
+
 class IVioGpuPCI
 {
   public:
