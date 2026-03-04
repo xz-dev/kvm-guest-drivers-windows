@@ -2304,10 +2304,10 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
             {
                 VioGpuMemSegment newSegment;
                 CPciBar *pBar = m_PciResources.GetPciBar(0);
-                if (!newSegment.Init((UINT)requiredSize, pBar))
+                if (!newSegment.Init((UINT)requiredSize, pBar) || TRUE) // TEST: Force failure for rollback test
                 {
                     newSegment.Close();
-                    DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment\n", __FUNCTION__));
+                    DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment (TEST FORCED)\n", __FUNCTION__));
                     return STATUS_INSUFFICIENT_RESOURCES;
                 }
                 VioGpuObj *oldFrameBuf = m_pFrameBuf;
