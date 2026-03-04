@@ -2322,8 +2322,10 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                 return STATUS_INSUFFICIENT_RESOURCES; // Old state intact
             }
             VioGpuObj *oldFrameBuf = m_pFrameBuf;
+            m_pFrameBuf = NULL;
             if (!CreateFrameBufferObj(newSegment, &m_ModeInfo[idx], pCurrentMode))
             {
+                m_pFrameBuf = oldFrameBuf;
                 DbgPrint(TRACE_LEVEL_ERROR,
                          ("%s device %d: failed setting current mode %d (%d x %d)\n",
                           __FUNCTION__,
@@ -3607,16 +3609,16 @@ BOOLEAN VioGpuAdapter::ResetToVgaMode(void)
     return TRUE;
 }
 
-void VioGpuAdapter::DestroyFrameBufferObj(VioGpuObj *m_pFrameBuf,
+void VioGpuAdapter::DestroyFrameBufferObj(VioGpuObj *pFrameBuf,
                                           BOOLEAN bReset,
                                           BOOLEAN bKeepBuffer)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     UINT resid = 0;
 
-    if (m_pFrameBuf != NULL)
+    if (pFrameBuf != NULL)
     {
-        resid = (UINT)m_pFrameBuf->GetId();
+        resid = (UINT)pFrameBuf->GetId();
         m_CtrlQueue.DetachBacking(resid);
         m_CtrlQueue.DestroyResource(resid);
         if (bReset == TRUE)
@@ -3631,9 +3633,8 @@ void VioGpuAdapter::DestroyFrameBufferObj(VioGpuObj *m_pFrameBuf,
         }
         else
         {
-            delete m_pFrameBuf;
+            delete pFrameBuf;
         }
-        m_pFrameBuf = NULL;
         m_Idr.PutId(resid);
     }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
@@ -3849,7 +3850,7 @@ UINT ColorFormat(UINT format)
 }
 
 PAGED_CODE_SEG_BEGIN
-BOOLEAN VioGpuAdapter::CreateFrameBufferObj(VioGpuMemSegment &m_FrameSegment,
+BOOLEAN VioGpuAdapter::CreateFrameBufferObj(VioGpuMemSegment &frameSegment,
                                             PVIDEO_MODE_INFORMATION pModeInfo,
                                             CURRENT_MODE *pCurrentMode)
 {
@@ -3866,7 +3867,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(VioGpuMemSegment &m_FrameSegment,
     resid = m_Idr.GetId();
     m_CtrlQueue.CreateResource(resid, format, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight);
     obj = new (NonPagedPoolNx) VioGpuObj();
-    if (!obj->Init(size, &m_FrameSegment))
+    if (!obj->Init(size, &frameSegment))
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to init obj size = %d\n", __FUNCTION__, size));
         m_CtrlQueue.DestroyResource(resid);
