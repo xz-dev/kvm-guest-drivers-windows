@@ -2298,7 +2298,9 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
         if (Mode == m_ModeInfo[idx].ModeIndex /*m_ModeNumbers[idx]*/)
         {
             UINT requiredSize = m_ModeInfo[idx].ScreenStride * m_ModeInfo[idx].VisScreenHeight;
-            if ((SIZE_T)requiredSize > m_FrameSegment.GetSize())
+            if ((SIZE_T)requiredSize > m_FrameSegment.GetSize() ||
+                (m_FrameSegment.GetSize() > (SIZE_T)requiredSize + SHRINK_THRESHOLD_BYTES &&
+                 (SIZE_T)requiredSize > m_InitialFrameSegmentSize))
             {
                 VioGpuMemSegment newSegment;
                 CPciBar *pBar = m_PciResources.GetPciBar(0);
