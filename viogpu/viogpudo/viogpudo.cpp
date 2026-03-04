@@ -1728,6 +1728,7 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
                  ("<--- %s: SetCurrentMode failed with Status = 0x%X, rolling back to old mode (%dx%d)\n",
                   __FUNCTION__, Status, oldMode.DispInfo.Width, oldMode.DispInfo.Height));
         *pCurrentMode = oldMode;
+        m_pHWDevice->RestoreHardwareScanout(pCurrentMode);
     }
 
     return Status;
@@ -2353,14 +2354,17 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
             }
             else
             {
-                if (pCurrentMode->Flags.FrameBufferIsActive)
-                {
-                    DestroyFrameBufferObj(m_pFrameBuf, FALSE, FALSE);
-                    pCurrentMode->Flags.FrameBufferIsActive = FALSE;
-                }
+                VioGpuObj *oldFrameBuf = m_pFrameBuf;
+                BOOLEAN wasActive = pCurrentMode->Flags.FrameBufferIsActive;
+                m_pFrameBuf = NULL;
+                pCurrentMode->Flags.FrameBufferIsActive = FALSE;
                 if (CreateFrameBufferObj(m_FrameSegment, &m_ModeInfo[idx], pCurrentMode))
                 {
-                    DbgPrint(TRACE_LEVEL_ERROR,
+                    if (oldFrameBuf != NULL)
+                    {
+                        DestroyFrameBufferObj(oldFrameBuf, FALSE, FALSE);
+                    }
+                    DbgPrint(TRACE_LEVEL_INFORMATION,
                              ("%s device %d: setting current mode %d (%d x %d)\n",
                               __FUNCTION__,
                               m_Id,
@@ -2368,6 +2372,12 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                               m_ModeInfo[idx].VisScreenWidth,
                               m_ModeInfo[idx].VisScreenHeight));
                     return STATUS_SUCCESS;
+                }
+                else
+                {
+                    m_pFrameBuf = oldFrameBuf;
+                    pCurrentMode->Flags.FrameBufferIsActive = wasActive;
+                    return STATUS_NO_MEMORY;
                 }
             }
         }
@@ -2965,6 +2975,41 @@ VOID VioGpuAdapter::BlackOutScreen(CURRENT_MODE *pCurrentMod)
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+}
+
+VOID VioGpuAdapter::RestoreHardwareScanout(CURRENT_MODE *pCurrentMode)
+{
+    PAGED_CODE();
+
+    DbgPrint(TRACE_LEVEL_INFORMATION, ("---> %s\n", __FUNCTION__));
+
+    if (m_pFrameBuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("<--- %s: m_pFrameBuf is NULL, cannot restore scanout\n", __FUNCTION__));
+        return;
+    }
+
+    if (!pCurrentMode->Flags.FrameBufferIsActive)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("<--- %s: FrameBuffer is not active, cannot restore scanout\n", __FUNCTION__));
+        return;
+    }
+
+    UINT resid = m_pFrameBuf->GetId();
+    UINT width = pCurrentMode->DispInfo.Width;
+    UINT height = pCurrentMode->DispInfo.Height;
+
+    DbgPrint(TRACE_LEVEL_INFORMATION,
+             ("%s: restoring scanout resid=%d (%dx%d)\n",
+              __FUNCTION__, resid, width, height));
+
+    m_CtrlQueue.SetScanout(0 /*FIXME m_Id*/, resid, width, height, 0, 0);
+    m_CtrlQueue.TransferToHost2D(resid, 0, width, height, 0, 0);
+    m_CtrlQueue.ResFlush(resid, width, height, 0, 0);
+
+    DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s\n", __FUNCTION__));
 }
 
 NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape,

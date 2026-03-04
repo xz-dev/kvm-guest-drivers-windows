@@ -99,6 +99,7 @@ class VioGpuAdapter : IVioGpuPCI
                                        _In_ D3DKMDT_VIDPN_PRESENT_PATH_ROTATION Rotation,
                                        _In_ const CURRENT_MODE *pModeCur);
     VOID BlackOutScreen(CURRENT_MODE *pCurrentMod);
+    VOID RestoreHardwareScanout(CURRENT_MODE *pCurrentMode);
     BOOLEAN InterruptRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface, _In_ ULONG MessageNumber);
     VOID DpcRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface);
     VOID ResetDevice(VOID);
