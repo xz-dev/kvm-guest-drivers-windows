@@ -2405,32 +2405,16 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
 
                 // Phase 6: Swap segment ownership
                 // After swap: m_FrameSegment has new resources, newSegment has old resources
-                BOOLEAN oldWasSystemMemory = m_FrameSegment.IsSystemMemory();
                 SIZE_T oldSize = m_FrameSegment.GetSize();
                 m_FrameSegment.Swap(newSegment);
                 m_pVioGpuDod->SetUsePhysicalMemory(m_FrameSegment.IsSystemMemory() == FALSE);
 
-                // Manually release old segment resources (now in newSegment)
-                // Don't rely on destructor - explicitly handle here for clarity and control
-                // Note: Only close system memory, BAR memory is managed by PCI resources
-                if (oldWasSystemMemory)
-                {
-                    DbgPrint(TRACE_LEVEL_INFORMATION,
-                             ("%s: Closing old system memory segment (size=%Iu)\n",
-                              __FUNCTION__,
-                              oldSize));
-                    newSegment.Close();
-                }
-                else
-                {
-                    // Old segment was BAR - don't close it, just reset the pointers
-                    // BAR memory is managed by PCI resources and should not be freed here
-                    DbgPrint(TRACE_LEVEL_INFORMATION,
-                             ("%s: Old segment was BAR, resetting without close (size=%Iu)\n",
-                              __FUNCTION__,
-                              oldSize));
-                    newSegment.Reset();
-                }
+                // Close old segment resources (now in newSegment)
+                DbgPrint(TRACE_LEVEL_INFORMATION,
+                         ("%s: Closing old segment (size=%Iu)\n",
+                          __FUNCTION__,
+                          oldSize));
+                newSegment.Close();
 
                 // Phase 7: Create VioGpuObj bound to m_FrameSegment
                 VioGpuObj *newObj = new (NonPagedPoolNx) VioGpuObj();

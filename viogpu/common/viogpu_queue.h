@@ -135,7 +135,6 @@ class VioGpuMemSegment
         return m_bSystemMemory;
     }
     void Close(void);
-    void Reset(void); // Clear all pointers without releasing resources (for ownership transfer)
     BOOLEAN Merge(SIZE_T targetSize, CPciBar *pBar, SIZE_T fixedBlockSize = 0);
     void Swap(VioGpuMemSegment &other);
 
