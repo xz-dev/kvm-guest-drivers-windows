@@ -2318,7 +2318,7 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                 {
                     newSegment.Close();
                     DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment (TEST FORCED)\n", __FUNCTION__));
-                    return STATUS_INSUFFICIENT_RESOURCES;
+                    return STATUS_NO_MEMORY;
                 }
                 VioGpuObj *oldFrameBuf = m_pFrameBuf;
                 m_pFrameBuf = NULL;
@@ -2333,7 +2333,7 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                               m_ModeInfo[idx].VisScreenHeight));
                     m_pFrameBuf = oldFrameBuf;
                     newSegment.Close();
-                    return STATUS_INSUFFICIENT_RESOURCES;
+                    return STATUS_NO_MEMORY;
                 }
                 if (oldFrameBuf != NULL)
                 {
@@ -2373,7 +2373,7 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
         }
     }
     DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed\n", __FUNCTION__));
-    return STATUS_UNSUCCESSFUL;
+    return STATUS_NO_MEMORY;
 }
 
 NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
