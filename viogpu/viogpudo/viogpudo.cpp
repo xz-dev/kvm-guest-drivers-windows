@@ -1724,6 +1724,9 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
 
     if (!NT_SUCCESS(Status))
     {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("<--- %s: SetCurrentMode failed with Status = 0x%X, rolling back to old mode (%dx%d)\n",
+                  __FUNCTION__, Status, oldMode.DispInfo.Width, oldMode.DispInfo.Height));
         *pCurrentMode = oldMode;
     }
 
