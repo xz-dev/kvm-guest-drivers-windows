@@ -205,7 +205,6 @@ BOOLEAN CtrlQueue::AskDisplayInfo(PGPU_VBUFFER *buf)
     PGPU_VBUFFER vbuf;
     PGPU_RESP_DISP_INFO resp_buf;
     KEVENT event;
-    NTSTATUS status;
 
     resp_buf = reinterpret_cast<PGPU_RESP_DISP_INFO>(new (NonPagedPoolNx) BYTE[sizeof(GPU_RESP_DISP_INFO)]);
 
@@ -245,7 +244,6 @@ BOOLEAN CtrlQueue::AskEdidInfo(PGPU_VBUFFER *buf, UINT id)
     PGPU_VBUFFER vbuf;
     PGPU_RESP_EDID resp_buf;
     KEVENT event;
-    NTSTATUS status;
 
     resp_buf = reinterpret_cast<PGPU_RESP_EDID>(new (NonPagedPoolNx) BYTE[sizeof(GPU_RESP_EDID)]);
 
