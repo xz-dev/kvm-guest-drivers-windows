@@ -2302,30 +2302,14 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
             UINT requiredSize = m_ModeInfo[idx].ScreenStride * m_ModeInfo[idx].VisScreenHeight;
             if (!newSegment.Init(requiredSize, pBar))
             {
-                DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment\n", __FUNCTION__));
-                return STATUS_INSUFFICIENT_RESOURCES; // Old state intact
-            }
-            UINT newResId = m_Idr.GetId();
-            UINT format = ColorFormat(pCurrentMode->DispInfo.ColorFormat);
-            if (!m_CtrlQueue.CreateResourceSync(newResId,
-                                                format,
-                                                m_ModeInfo[idx].VisScreenWidth,
-                                                m_ModeInfo[idx].VisScreenHeight))
-            {
-                DbgPrint(TRACE_LEVEL_FATAL,
-                         ("<--- %s: QEMU rejected resource creation (%ux%u)\n",
-                          __FUNCTION__,
-                          m_ModeInfo[idx].VisScreenWidth,
-                          m_ModeInfo[idx].VisScreenHeight));
                 newSegment.Close();
-                m_Idr.PutId(newResId);
-                return STATUS_INSUFFICIENT_RESOURCES; // Old state intact
+                DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment\n", __FUNCTION__));
+                return STATUS_INSUFFICIENT_RESOURCES;
             }
             VioGpuObj *oldFrameBuf = m_pFrameBuf;
             m_pFrameBuf = NULL;
             if (!CreateFrameBufferObj(newSegment, &m_ModeInfo[idx], pCurrentMode))
             {
-                m_pFrameBuf = oldFrameBuf;
                 DbgPrint(TRACE_LEVEL_ERROR,
                          ("%s device %d: failed setting current mode %d (%d x %d)\n",
                           __FUNCTION__,
@@ -2333,8 +2317,8 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                           Mode,
                           m_ModeInfo[idx].VisScreenWidth,
                           m_ModeInfo[idx].VisScreenHeight));
+                m_pFrameBuf = oldFrameBuf;
                 newSegment.Close();
-                m_Idr.PutId(newResId);
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
             if (pCurrentMode->Flags.FrameBufferIsActive)

@@ -341,45 +341,6 @@ void CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
-BOOLEAN CtrlQueue::CreateResourceSync(UINT res_id, UINT format, UINT width, UINT height)
-{
-    PAGED_CODE();
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s res_id=%u width=%u height=%u\n", __FUNCTION__, res_id, width, height));
-
-    PGPU_RES_CREATE_2D cmd;
-    PGPU_VBUFFER vbuf;
-    KEVENT event;
-
-    cmd = (PGPU_RES_CREATE_2D)AllocCmd(&vbuf, sizeof(*cmd));
-    RtlZeroMemory(cmd, sizeof(*cmd));
-
-    cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
-    cmd->resource_id = res_id;
-    cmd->format = format;
-    cmd->width = width;
-    cmd->height = height;
-
-    KeInitializeEvent(&event, NotificationEvent, FALSE);
-    vbuf->complete_cb = NotifyEventCompleteCB;
-    vbuf->complete_ctx = &event;
-    vbuf->auto_release = false;
-
-    QueueBuffer(vbuf);
-    KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
-
-    PGPU_CTRL_HDR resp = (PGPU_CTRL_HDR)vbuf->resp_buf;
-    BOOLEAN success = (resp && resp->type == VIRTIO_GPU_RESP_OK_NODATA);
-    if (!success)
-    {
-        DbgPrint(TRACE_LEVEL_ERROR,
-                 ("<--- %s FAILED res_id=%u resp_type=0x%x\n", __FUNCTION__, res_id, resp ? resp->type : 0));
-    }
-
-    ReleaseBuffer(vbuf);
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s res_id=%u\n", __FUNCTION__, res_id));
-    return success;
-}
-
 void CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
 {
     PAGED_CODE();
