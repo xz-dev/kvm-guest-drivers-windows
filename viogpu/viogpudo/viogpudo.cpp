@@ -2321,7 +2321,7 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                 newSegment.Close();
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            if (pCurrentMode->Flags.FrameBufferIsActive)
+            if (oldFrameBuf != NULL)
             {
                 DestroyFrameBufferObj(oldFrameBuf, FALSE, FALSE);
             }
