@@ -1686,6 +1686,8 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     NTSTATUS Status = STATUS_SUCCESS;
 
     CURRENT_MODE *pCurrentMode = &m_CurrentMode;
+    CURRENT_MODE oldMode = *pCurrentMode;
+
     DbgPrint(TRACE_LEVEL_FATAL,
              ("---> %s (%dx%d)\n",
               __FUNCTION__,
@@ -1718,6 +1720,11 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
                 break;
             }
         }
+    }
+
+    if (!NT_SUCCESS(Status))
+    {
+        *pCurrentMode = oldMode;
     }
 
     return Status;
