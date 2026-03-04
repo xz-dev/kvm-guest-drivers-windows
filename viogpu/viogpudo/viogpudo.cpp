@@ -44,6 +44,9 @@ static UINT g_InstanceId = 0;
 // Threshold for shrinking framebuffer segment: only shrink if we can save more than 128MB
 #define SHRINK_THRESHOLD_BYTES (128 * 1024 * 1024)
 
+// Forward declaration (defined at line ~3992)
+UINT ColorFormat(UINT format);
+
 PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
