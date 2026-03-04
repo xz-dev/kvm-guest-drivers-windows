@@ -2297,45 +2297,67 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
     {
         if (Mode == m_ModeInfo[idx].ModeIndex /*m_ModeNumbers[idx]*/)
         {
-            VioGpuMemSegment newSegment;
-            CPciBar *pBar = m_PciResources.GetPciBar(0);
             UINT requiredSize = m_ModeInfo[idx].ScreenStride * m_ModeInfo[idx].VisScreenHeight;
-            if (!newSegment.Init(requiredSize, pBar))
+            if ((SIZE_T)requiredSize > m_FrameSegment.GetSize())
             {
+                VioGpuMemSegment newSegment;
+                CPciBar *pBar = m_PciResources.GetPciBar(0);
+                if (!newSegment.Init(requiredSize, pBar))
+                {
+                    newSegment.Close();
+                    DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment\n", __FUNCTION__));
+                    return STATUS_INSUFFICIENT_RESOURCES;
+                }
+                VioGpuObj *oldFrameBuf = m_pFrameBuf;
+                m_pFrameBuf = NULL;
+                if (!CreateFrameBufferObj(newSegment, &m_ModeInfo[idx], pCurrentMode))
+                {
+                    DbgPrint(TRACE_LEVEL_ERROR,
+                             ("%s device %d: failed setting current mode %d (%d x %d)\n",
+                              __FUNCTION__,
+                              m_Id,
+                              Mode,
+                              m_ModeInfo[idx].VisScreenWidth,
+                              m_ModeInfo[idx].VisScreenHeight));
+                    m_pFrameBuf = oldFrameBuf;
+                    newSegment.Close();
+                    return STATUS_INSUFFICIENT_RESOURCES;
+                }
+                if (oldFrameBuf != NULL)
+                {
+                    DestroyFrameBufferObj(oldFrameBuf, FALSE, FALSE);
+                }
+                m_FrameSegment.Swap(newSegment);
                 newSegment.Close();
-                DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment\n", __FUNCTION__));
-                return STATUS_INSUFFICIENT_RESOURCES;
-            }
-            VioGpuObj *oldFrameBuf = m_pFrameBuf;
-            m_pFrameBuf = NULL;
-            if (!CreateFrameBufferObj(newSegment, &m_ModeInfo[idx], pCurrentMode))
-            {
-                DbgPrint(TRACE_LEVEL_ERROR,
-                         ("%s device %d: failed setting current mode %d (%d x %d)\n",
+                pCurrentMode->Flags.FrameBufferIsActive = TRUE;
+                DbgPrint(TRACE_LEVEL_INFORMATION,
+                         ("%s device %d: setting current mode %d (%d x %d)\n",
                           __FUNCTION__,
                           m_Id,
                           Mode,
                           m_ModeInfo[idx].VisScreenWidth,
                           m_ModeInfo[idx].VisScreenHeight));
-                m_pFrameBuf = oldFrameBuf;
-                newSegment.Close();
-                return STATUS_INSUFFICIENT_RESOURCES;
+                return STATUS_SUCCESS;
             }
-            if (oldFrameBuf != NULL)
+            else
             {
-                DestroyFrameBufferObj(oldFrameBuf, FALSE, FALSE);
+                if (pCurrentMode->Flags.FrameBufferIsActive)
+                {
+                    DestroyFrameBufferObj(m_pFrameBuf, FALSE, FALSE);
+                    pCurrentMode->Flags.FrameBufferIsActive = FALSE;
+                }
+                if (CreateFrameBufferObj(m_FrameSegment, &m_ModeInfo[idx], pCurrentMode))
+                {
+                    DbgPrint(TRACE_LEVEL_ERROR,
+                             ("%s device %d: setting current mode %d (%d x %d)\n",
+                              __FUNCTION__,
+                              m_Id,
+                              Mode,
+                              m_ModeInfo[idx].VisScreenWidth,
+                              m_ModeInfo[idx].VisScreenHeight));
+                    return STATUS_SUCCESS;
+                }
             }
-            m_FrameSegment.Swap(newSegment);
-            newSegment.Close();
-            pCurrentMode->Flags.FrameBufferIsActive = TRUE;
-            DbgPrint(TRACE_LEVEL_INFORMATION,
-                     ("%s device %d: setting current mode %d (%d x %d)\n",
-                      __FUNCTION__,
-                      m_Id,
-                      Mode,
-                      m_ModeInfo[idx].VisScreenWidth,
-                      m_ModeInfo[idx].VisScreenHeight));
-            return STATUS_SUCCESS;
         }
     }
     DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed\n", __FUNCTION__));
@@ -3593,9 +3615,7 @@ BOOLEAN VioGpuAdapter::ResetToVgaMode(void)
     return TRUE;
 }
 
-void VioGpuAdapter::DestroyFrameBufferObj(VioGpuObj *pFrameBuf,
-                                          BOOLEAN bReset,
-                                          BOOLEAN bKeepBuffer)
+void VioGpuAdapter::DestroyFrameBufferObj(VioGpuObj *&pFrameBuf, BOOLEAN bReset, BOOLEAN bKeepBuffer)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     UINT resid = 0;
@@ -3619,6 +3639,7 @@ void VioGpuAdapter::DestroyFrameBufferObj(VioGpuObj *pFrameBuf,
         {
             delete pFrameBuf;
         }
+        pFrameBuf = NULL;
         m_Idr.PutId(resid);
     }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));

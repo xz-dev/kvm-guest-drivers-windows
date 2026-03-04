@@ -129,7 +129,7 @@ class VioGpuMemSegment
     {
         return m_pSGList;
     }
-    BOOLEAN Init(_In_ UINT size, _In_opt_ CPciBar *pBar = NULL, _In_ BOOLEAN singleBlock = FALSE);
+    BOOLEAN Init(_In_ SIZE_T size, _In_opt_ CPciBar *pBar = NULL, _In_ BOOLEAN singleBlock = FALSE);
     BOOLEAN IsSystemMemory(void)
     {
         return m_bSystemMemory;

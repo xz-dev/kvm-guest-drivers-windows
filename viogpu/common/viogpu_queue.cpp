@@ -983,14 +983,14 @@ static PVOID AllocateContiguousWithFallback(SIZE_T requestedSize,
     return NULL;
 }
 
-BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ CPciBar *pBar, _In_ BOOLEAN singleBlock)
+BOOLEAN VioGpuMemSegment::Init(_In_ SIZE_T size, _In_opt_ CPciBar *pBar, _In_ BOOLEAN singleBlock)
 {
     PAGED_CODE();
 
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s size=%u singleBlock=%d\n", __FUNCTION__, size, singleBlock));
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s size=%Iu singleBlock=%d\n", __FUNCTION__, size, singleBlock));
 
     ASSERT(size);
-    UINT pages = BYTES_TO_PAGES(size);
+    SIZE_T pages = BYTES_TO_PAGES(size);
     size = pages * PAGE_SIZE;
 
     // Delegate to Merge which handles BAR vs system memory decision

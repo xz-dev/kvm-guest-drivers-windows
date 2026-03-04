@@ -164,7 +164,7 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS UpdateChildStatus(BOOLEAN connect);
     void SetCustomDisplay(_In_ USHORT xres, _In_ USHORT yres);
     BOOLEAN CreateFrameBufferObj(VioGpuMemSegment &m_FrameSegment, PVIDEO_MODE_INFORMATION pModeInfo, CURRENT_MODE *pCurrentMode);
-    void DestroyFrameBufferObj(VioGpuObj *m_pFrameBuf, BOOLEAN bReset, BOOLEAN bKeepBuffer);
+    void DestroyFrameBufferObj(VioGpuObj *&pFrameBuf, BOOLEAN bReset, BOOLEAN bKeepBuffer);
     BOOLEAN AllocateFrameSegment(_In_ UINT requiredSize);
     BOOLEAN CreateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
     BOOLEAN UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
