@@ -1092,6 +1092,27 @@ void VioGpuMemSegment::Close(void)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
+void VioGpuMemSegment::Reset(void)
+{
+    PAGED_CODE();
+
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
+
+    // Clear all pointers without releasing resources
+    // Used after Swap() when the resources have been transferred elsewhere
+    m_pSGList = NULL;
+    m_pVAddr = NULL;
+    m_pMdl = NULL;
+    m_Size = 0;
+    m_bSystemMemory = FALSE;
+    m_bMapped = FALSE;
+    m_pBlocks = NULL;
+    m_pBlockSizes = NULL;
+    m_nBlocks = 0;
+
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+}
+
 void VioGpuMemSegment::CloseBar()
 {
     PAGED_CODE();
