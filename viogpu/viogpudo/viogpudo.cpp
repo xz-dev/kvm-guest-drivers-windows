@@ -2306,19 +2306,35 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
             BOOLEAN needShrink = (currentSize > m_InitialFrameSegmentSize) &&
                                  ((currentSize - requiredSize) > SHRINK_THRESHOLD_BYTES);
 
-            if (needExpand)
+            if (needExpand || needShrink)
             {
-                // ============ EXPAND path: use new segment to avoid black screen on failure ============
-                DbgPrint(TRACE_LEVEL_WARNING,
-                         ("%s: Expanding m_FrameSegment from %Iu to %u bytes\n",
-                          __FUNCTION__,
-                          currentSize,
-                          requiredSize));
+                // ============ Replacement path: expand or shrink uses same logic ============
+                UINT newSegmentSize;
+                if (needExpand)
+                {
+                    newSegmentSize = requiredSize;
+                    DbgPrint(TRACE_LEVEL_WARNING,
+                             ("%s: Expanding m_FrameSegment from %Iu to %u bytes\n",
+                              __FUNCTION__,
+                              currentSize,
+                              newSegmentSize));
+                }
+                else
+                {
+                    // Shrink: keep 128MB buffer, but not below initial size
+                    newSegmentSize = requiredSize + SHRINK_THRESHOLD_BYTES;
+                    newSegmentSize = max(newSegmentSize, (UINT)m_InitialFrameSegmentSize);
+                    DbgPrint(TRACE_LEVEL_WARNING,
+                             ("%s: Shrinking m_FrameSegment from %Iu to %u bytes\n",
+                              __FUNCTION__,
+                              currentSize,
+                              newSegmentSize));
+                }
 
                 // Phase 1: Allocate new segment (old segment untouched)
                 VioGpuMemSegment newSegment;
                 CPciBar *pBar = m_PciResources.GetPciBar(0);
-                if (!newSegment.Init(requiredSize, pBar))
+                if (!newSegment.Init(newSegmentSize, pBar))
                 {
                     DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment\n", __FUNCTION__));
                     return STATUS_INSUFFICIENT_RESOURCES; // Old state intact
@@ -2387,8 +2403,10 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                     pCurrentMode->Flags.FrameBufferIsActive = FALSE;
                 }
 
-                // Phase 6: Transfer segment ownership
-                m_FrameSegment.TakeFrom(newSegment);
+                // Phase 6: Swap segment ownership
+                // After swap: m_FrameSegment has new resources, newSegment has old resources
+                // newSegment's destructor will call Close() to release old resources
+                m_FrameSegment.Swap(newSegment);
                 m_pVioGpuDod->SetUsePhysicalMemory(m_FrameSegment.IsSystemMemory() == FALSE);
 
                 // Phase 7: Create VioGpuObj bound to m_FrameSegment
@@ -2420,7 +2438,7 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                 pCurrentMode->Flags.FrameBufferIsActive = TRUE;
 
                 DbgPrint(TRACE_LEVEL_INFORMATION,
-                         ("<--- %s device %d: setting current mode %d (%d x %d) [expanded]\n",
+                         ("<--- %s device %d: setting current mode %d (%d x %d)\n",
                           __FUNCTION__,
                           m_Id,
                           Mode,
@@ -2430,45 +2448,13 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
             }
             else
             {
-                // ============ Non-expand path: reuse existing segment ============
-
-                // Destroy old framebuffer
+                // ============ Reuse path: segment size unchanged ============
                 if (pCurrentMode->Flags.FrameBufferIsActive)
                 {
-                    if (needShrink)
-                    {
-                        DestroyFrameBufferObjSync(FALSE, FALSE);
-                    }
-                    else
-                    {
-                        DestroyFrameBufferObj(FALSE, FALSE);
-                    }
+                    DestroyFrameBufferObj(FALSE, FALSE);
                     pCurrentMode->Flags.FrameBufferIsActive = FALSE;
-                    pCurrentMode->FrameBuffer = NULL;
                 }
-
-                // Shrink segment if needed
-                if (needShrink)
-                {
-                    UINT newSize = requiredSize + SHRINK_THRESHOLD_BYTES;
-                    newSize = max(newSize, (UINT)m_InitialFrameSegmentSize);
-                    DbgPrint(TRACE_LEVEL_WARNING,
-                             ("%s: Shrinking m_FrameSegment from %Iu to %u bytes\n",
-                              __FUNCTION__,
-                              currentSize,
-                              newSize));
-
-                    if (!AllocateFrameSegment(newSize))
-                    {
-                        DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to shrink segment\n", __FUNCTION__));
-                        return STATUS_INSUFFICIENT_RESOURCES;
-                    }
-                }
-
-                // Create new framebuffer
-                BOOLEAN created = needShrink ? CreateFrameBufferObjSync(&m_ModeInfo[idx], pCurrentMode)
-                                             : CreateFrameBufferObj(&m_ModeInfo[idx], pCurrentMode);
-                if (created)
+                if (CreateFrameBufferObj(&m_ModeInfo[idx], pCurrentMode))
                 {
                     DbgPrint(TRACE_LEVEL_INFORMATION,
                              ("<--- %s device %d: setting current mode %d (%d x %d)\n",
@@ -2479,7 +2465,6 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
                               m_ModeInfo[idx].VisScreenHeight));
                     return STATUS_SUCCESS;
                 }
-
                 DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed: CreateFrameBufferObj failed\n", __FUNCTION__));
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
@@ -4038,63 +4023,6 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to attach gpu object\n", __FUNCTION__));
         m_CtrlQueue.DestroyResource(resid);
-        m_Idr.PutId(resid);
-        delete obj;
-        return FALSE;
-    }
-    m_CtrlQueue.SetScanout(0 /*FIXME m_Id*/, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
-    m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
-    m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
-    m_pFrameBuf = obj;
-    pCurrentMode->FrameBuffer = obj->GetVirtualAddress();
-    pCurrentMode->Flags.FrameBufferIsActive = TRUE;
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
-    return TRUE;
-}
-
-BOOLEAN VioGpuAdapter::CreateFrameBufferObjSync(PVIDEO_MODE_INFORMATION pModeInfo, CURRENT_MODE *pCurrentMode)
-{
-    UINT resid, format, size;
-    VioGpuObj *obj;
-    PAGED_CODE();
-    DbgPrint(TRACE_LEVEL_INFORMATION,
-             ("---> %s - %d: (%d x %d)\n", __FUNCTION__, m_Id, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight));
-    ASSERT(m_pFrameBuf == NULL);
-    size = pModeInfo->ScreenStride * pModeInfo->VisScreenHeight;
-    format = ColorFormat(pCurrentMode->DispInfo.ColorFormat);
-    resid = m_Idr.GetId();
-
-    // NOTE: QEMU virtio-gpu has a host memory limit (max_hostmem, default 256MB)
-    // to prevent guests from consuming unlimited host memory.
-    // CreateResourceSync may fail with VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY if the
-    // requested resolution exceeds this limit on the host side.
-    // Workaround: -device virtio-gpu-pci,max_hostmem=512M (or larger)
-    // See: https://patchwork.kernel.org/patch/9451903/
-    if (!m_CtrlQueue.CreateResourceSync(resid, format, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight))
-    {
-        DbgPrint(TRACE_LEVEL_FATAL,
-                 ("<--- %s QEMU rejected resource creation (res_id=%u, %ux%u)\n",
-                  __FUNCTION__,
-                  resid,
-                  pModeInfo->VisScreenWidth,
-                  pModeInfo->VisScreenHeight));
-        m_Idr.PutId(resid);
-        return FALSE;
-    }
-    obj = new (NonPagedPoolNx) VioGpuObj();
-    if (!obj->Init(size, &m_FrameSegment))
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to init obj size = %d\n", __FUNCTION__, size));
-        m_CtrlQueue.DestroyResourceSync(resid);
-        m_Idr.PutId(resid);
-        delete obj;
-        return FALSE;
-    }
-
-    if (!GpuObjectAttach(resid, obj))
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to attach gpu object\n", __FUNCTION__));
-        m_CtrlQueue.DestroyResourceSync(resid);
         m_Idr.PutId(resid);
         delete obj;
         return FALSE;

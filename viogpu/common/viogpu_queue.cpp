@@ -1562,16 +1562,23 @@ BOOLEAN VioGpuMemSegment::Merge(SIZE_T targetSize, CPciBar *pBar, SIZE_T fixedBl
     return TRUE;
 }
 
-void VioGpuMemSegment::TakeFrom(VioGpuMemSegment &other)
+void VioGpuMemSegment::Swap(VioGpuMemSegment &other)
 {
     PAGED_CODE();
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    // Close our own resources first
-    Close();
+    // Swap all members - no release logic here, just exchange pointers
+    BOOLEAN tmpSystemMemory = m_bSystemMemory;
+    BOOLEAN tmpMapped = m_bMapped;
+    PSCATTER_GATHER_LIST tmpSGList = m_pSGList;
+    PVOID tmpVAddr = m_pVAddr;
+    PMDL tmpMdl = m_pMdl;
+    SIZE_T tmpSize = m_Size;
+    PVOID *tmpBlocks = m_pBlocks;
+    SIZE_T *tmpBlockSizes = m_pBlockSizes;
+    UINT tmpNBlocks = m_nBlocks;
 
-    // Take ownership of other's resources
     m_bSystemMemory = other.m_bSystemMemory;
     m_bMapped = other.m_bMapped;
     m_pSGList = other.m_pSGList;
@@ -1582,16 +1589,15 @@ void VioGpuMemSegment::TakeFrom(VioGpuMemSegment &other)
     m_pBlockSizes = other.m_pBlockSizes;
     m_nBlocks = other.m_nBlocks;
 
-    // Clear other to prevent double-free on destruction
-    other.m_pSGList = NULL;
-    other.m_pVAddr = NULL;
-    other.m_pMdl = NULL;
-    other.m_Size = 0;
-    other.m_bSystemMemory = FALSE;
-    other.m_bMapped = FALSE;
-    other.m_pBlocks = NULL;
-    other.m_pBlockSizes = NULL;
-    other.m_nBlocks = 0;
+    other.m_bSystemMemory = tmpSystemMemory;
+    other.m_bMapped = tmpMapped;
+    other.m_pSGList = tmpSGList;
+    other.m_pVAddr = tmpVAddr;
+    other.m_pMdl = tmpMdl;
+    other.m_Size = tmpSize;
+    other.m_pBlocks = tmpBlocks;
+    other.m_pBlockSizes = tmpBlockSizes;
+    other.m_nBlocks = tmpNBlocks;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }

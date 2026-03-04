@@ -136,7 +136,7 @@ class VioGpuMemSegment
     }
     void Close(void);
     BOOLEAN Merge(SIZE_T targetSize, CPciBar *pBar, SIZE_T fixedBlockSize = 0);
-    void TakeFrom(VioGpuMemSegment &other);
+    void Swap(VioGpuMemSegment &other);
 
   private:
     BOOLEAN ExpandSystemMemory(SIZE_T targetSize, SIZE_T fixedBlockSize = 0);
