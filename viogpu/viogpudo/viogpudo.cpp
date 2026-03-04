@@ -2297,14 +2297,14 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
     {
         if (Mode == m_ModeInfo[idx].ModeIndex /*m_ModeNumbers[idx]*/)
         {
-            UINT requiredSize = m_ModeInfo[idx].ScreenStride * m_ModeInfo[idx].VisScreenHeight;
-            if ((SIZE_T)requiredSize > m_FrameSegment.GetSize() ||
-                (m_FrameSegment.GetSize() > (SIZE_T)requiredSize + SHRINK_THRESHOLD_BYTES &&
-                 (SIZE_T)requiredSize > m_InitialFrameSegmentSize))
+            SIZE_T requiredSize = (SIZE_T)m_ModeInfo[idx].ScreenStride * m_ModeInfo[idx].VisScreenHeight;
+            if (requiredSize > m_FrameSegment.GetSize() ||
+                (m_FrameSegment.GetSize() > requiredSize + SHRINK_THRESHOLD_BYTES &&
+                 requiredSize > m_InitialFrameSegmentSize))
             {
                 VioGpuMemSegment newSegment;
                 CPciBar *pBar = m_PciResources.GetPciBar(0);
-                if (!newSegment.Init(requiredSize, pBar))
+                if (!newSegment.Init((UINT)requiredSize, pBar))
                 {
                     newSegment.Close();
                     DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s: Failed to allocate new segment\n", __FUNCTION__));
