@@ -232,7 +232,6 @@ BOOLEAN CtrlQueue::AskDisplayInfo(PGPU_VBUFFER *buf)
     PGPU_VBUFFER vbuf;
     PGPU_RESP_DISP_INFO resp_buf;
     KEVENT event;
-    NTSTATUS status;
 
     resp_buf = reinterpret_cast<PGPU_RESP_DISP_INFO>(new (NonPagedPoolNx) BYTE[sizeof(GPU_RESP_DISP_INFO)]);
 
@@ -252,17 +251,9 @@ BOOLEAN CtrlQueue::AskDisplayInfo(PGPU_VBUFFER *buf)
     vbuf->complete_ctx = &event;
     vbuf->auto_release = false;
 
-    LARGE_INTEGER timeout = {0};
-    timeout.QuadPart = Int32x32To64(1000, -10000);
-
     QueueBuffer(vbuf);
-    status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
+    KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
 
-    if (status == STATUS_TIMEOUT)
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("---> Failed to ask display info\n"));
-        VioGpuDbgBreak();
-    }
     *buf = vbuf;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
@@ -280,7 +271,6 @@ BOOLEAN CtrlQueue::AskEdidInfo(PGPU_VBUFFER *buf, UINT id)
     PGPU_VBUFFER vbuf;
     PGPU_RESP_EDID resp_buf;
     KEVENT event;
-    NTSTATUS status;
 
     resp_buf = reinterpret_cast<PGPU_RESP_EDID>(new (NonPagedPoolNx) BYTE[sizeof(GPU_RESP_EDID)]);
 
@@ -300,18 +290,8 @@ BOOLEAN CtrlQueue::AskEdidInfo(PGPU_VBUFFER *buf, UINT id)
     vbuf->complete_ctx = &event;
     vbuf->auto_release = false;
 
-    LARGE_INTEGER timeout = {0};
-    timeout.QuadPart = Int32x32To64(1000, -10000);
-
     QueueBuffer(vbuf);
-
-    status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
-
-    if (status == STATUS_TIMEOUT)
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("---> Failed to get edid info\n"));
-        VioGpuDbgBreak();
-    }
+    KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
 
     *buf = vbuf;
 
