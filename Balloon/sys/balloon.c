@@ -61,6 +61,7 @@ BalloonInit(IN WDFOBJECT WdfDevice)
     params[2].Interrupt = devCtx->WdfInterrupt;
 
     u64HostFeatures = VirtIOWdfGetDeviceFeatures(&devCtx->VDevice);
+    devCtx->bDeflateOnOOM = FALSE;
 
     if (virtio_is_feature_enabled(u64HostFeatures, VIRTIO_BALLOON_F_STATS_VQ))
     {
@@ -73,6 +74,16 @@ BalloonInit(IN WDFOBJECT WdfDevice)
     {
         nvqs = 2;
     }
+
+#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
+    if (devCtx->evLowMem && virtio_is_feature_enabled(u64HostFeatures, VIRTIO_BALLOON_F_DEFLATE_ON_OOM))
+    {
+        TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Enable deflate-on-OOM feature.\n");
+
+        virtio_feature_enable(u64GuestFeatures, VIRTIO_BALLOON_F_DEFLATE_ON_OOM);
+        devCtx->bDeflateOnOOM = TRUE;
+    }
+#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
 
     status = VirtIOWdfSetDriverFeatures(&devCtx->VDevice, u64GuestFeatures, 0);
     if (NT_SUCCESS(status))
@@ -138,6 +149,7 @@ BalloonFill(IN WDFOBJECT WdfDevice, IN size_t num)
     PHYSICAL_ADDRESS SkipBytes;
     PPAGE_LIST_ENTRY pNewPageListEntry;
     PMDL pPageMdl;
+    size_t maxPages;
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_HW_ACCESS, "--> %s\n", __FUNCTION__);
 
@@ -151,8 +163,14 @@ BalloonFill(IN WDFOBJECT WdfDevice, IN size_t num)
     }
 #endif // !BALLOON_INFLATE_IGNORE_LOWMEM
 
-    num = min(num, PAGE_SIZE / sizeof(PFN_NUMBER));
-    TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "Inflate balloon with %d pages.\n", num);
+    maxPages = PAGE_SIZE / sizeof(PFN_NUMBER);
+    if (ctx->bDeflateOnOOM)
+    {
+        maxPages = min(maxPages, (size_t)VIRTIO_BALLOON_OOM_NR_PAGES);
+    }
+
+    num = min(num, maxPages);
+    TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "Inflate balloon with %lu pages.\n", (ULONG)num);
 
     LowAddress.QuadPart = 0;
     HighAddress.QuadPart = (ULONGLONG)-1;
@@ -193,6 +211,20 @@ BalloonFill(IN WDFOBJECT WdfDevice, IN size_t num)
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
+#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
+    if (IsLowMemory(WdfDevice))
+    {
+        TraceEvents(TRACE_LEVEL_WARNING,
+                    DBG_HW_ACCESS,
+                    "Low memory after allocation. Returning %lu pages.\n",
+                    (ULONG)num);
+        ExFreeToNPagedLookasideList(&ctx->LookAsideList, pNewPageListEntry);
+        MmFreePagesFromMdl(pPageMdl);
+        ExFreePool(pPageMdl);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
+
     pNewPageListEntry->PageMdl = pPageMdl;
     PushEntryList(&ctx->PageListHead, &(pNewPageListEntry->SingleListEntry));
 
@@ -227,7 +259,7 @@ BalloonLeak(IN WDFOBJECT WdfDevice, IN size_t num)
     pPageMdl = pPageListEntry->PageMdl;
 
     num = MmGetMdlByteCount(pPageMdl) / PAGE_SIZE;
-    TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "Deflate balloon with %d pages.\n", num);
+    TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "Deflate balloon with %lu pages.\n", (ULONG)num);
 
     ctx->num_pfns = (ULONG)num;
     ctx->num_pages -= ctx->num_pfns;

@@ -40,6 +40,10 @@
 /* The feature bitmap for virtio balloon */
 #define VIRTIO_BALLOON_F_MUST_TELL_HOST 0 /* Tell before reclaiming pages */
 #define VIRTIO_BALLOON_F_STATS_VQ       1 /* Memory status virtqueue */
+#define VIRTIO_BALLOON_F_DEFLATE_ON_OOM 2 /* Deflate balloon on OOM */
+
+/* Maximum number of 4K pages to deflate on low-memory notifications. */
+#define VIRTIO_BALLOON_OOM_NR_PAGES     256
 
 typedef struct _VIRTIO_BALLOON_CONFIG
 {
@@ -90,6 +94,8 @@ typedef struct _DEVICE_CONTEXT
     KEVENT WakeUpThread;
     PKTHREAD Thread;
     BOOLEAN bShutDown;
+    BOOLEAN bDeflateOnOOM;
+    volatile LONG bNeedResize;
 
 #ifdef USE_BALLOON_SERVICE
     WDFREQUEST PendingWriteRequest;

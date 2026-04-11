@@ -135,8 +135,14 @@ BalloonDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit)
 
     devCtx->SurpriseRemoval = FALSE;
     devCtx->bShutDown = FALSE;
+    devCtx->bDeflateOnOOM = FALSE;
+    devCtx->bNeedResize = FALSE;
     devCtx->num_pages = 0;
     devCtx->PageListHead.Next = NULL;
+#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
+    devCtx->evLowMem = NULL;
+    devCtx->hLowMem = NULL;
+#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
     ExInitializeNPagedLookasideList(&devCtx->LookAsideList,
                                     NULL,
                                     NULL,
@@ -387,12 +393,23 @@ BalloonEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE PreviousS
     UNREFERENCED_PARAMETER(PreviousState);
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "--> %s\n", __FUNCTION__);
 
+#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
+    devCtx->evLowMem = IoCreateNotificationEvent((PUNICODE_STRING)&evLowMemString, &devCtx->hLowMem);
+    if (devCtx->evLowMem == NULL)
+    {
+        devCtx->hLowMem = NULL;
+        TraceEvents(TRACE_LEVEL_WARNING, DBG_PNP, "Low memory event unavailable, deflate-on-OOM disabled.\n");
+    }
+#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
+
     status = BalloonInit(Device);
     if (!NT_SUCCESS(status))
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP, "BalloonInit failed with status 0x%08x\n", status);
         goto Terminate;
     }
+
+    InterlockedExchange(&devCtx->bNeedResize, TRUE);
 
     status = BalloonCreateWorkerThread(Device);
     if (!NT_SUCCESS(status))
@@ -401,13 +418,17 @@ BalloonEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE PreviousS
         goto Terminate;
     }
 
-#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
-    devCtx->evLowMem = IoCreateNotificationEvent((PUNICODE_STRING)&evLowMemString, &devCtx->hLowMem);
-#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
-
 Terminate:
     if (!NT_SUCCESS(status))
     {
+#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
+        if (devCtx->evLowMem)
+        {
+            ZwClose(devCtx->hLowMem);
+            devCtx->hLowMem = NULL;
+            devCtx->evLowMem = NULL;
+        }
+#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
         BalloonTerm(Device);
     }
 
@@ -425,15 +446,16 @@ BalloonEvtDeviceD0Exit(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE TargetStat
 
     PAGED_CODE();
 
+    BalloonCloseWorkerThread(Device);
+
 #ifndef BALLOON_INFLATE_IGNORE_LOWMEM
     if (devCtx->evLowMem)
     {
         ZwClose(devCtx->hLowMem);
+        devCtx->hLowMem = NULL;
         devCtx->evLowMem = NULL;
     }
 #endif // !BALLOON_INFLATE_IGNORE_LOWMEM
-
-    BalloonCloseWorkerThread(Device);
 
 #ifndef USE_BALLOON_SERVICE
     /*
@@ -486,14 +508,21 @@ BalloonInterruptIsr(IN WDFINTERRUPT WdfInterrupt, IN ULONG MessageID)
 {
     PDEVICE_CONTEXT devCtx = NULL;
     WDFDEVICE Device;
+    UCHAR isr;
 
     UNREFERENCED_PARAMETER(MessageID);
 
     Device = WdfInterruptGetDevice(WdfInterrupt);
     devCtx = GetDeviceContext(Device);
 
-    if (VirtIOWdfGetISRStatus(&devCtx->VDevice) > 0)
+    isr = VirtIOWdfGetISRStatus(&devCtx->VDevice);
+    if (isr > 0)
     {
+        if (isr & VIRTIO_PCI_ISR_CONFIG)
+        {
+            InterlockedExchange(&devCtx->bNeedResize, TRUE);
+        }
+
         TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INTERRUPT, "--> %s\n", __FUNCTION__);
         WdfInterruptQueueDpcForIsr(WdfInterrupt);
         return TRUE;
@@ -667,44 +696,104 @@ VOID BalloonRoutine(IN PVOID pContext)
 
     NTSTATUS status = STATUS_SUCCESS;
     LONGLONG diff;
+    PVOID waitObjects[2];
+    ULONG waitCount;
+    BOOLEAN lowMem;
+    size_t leakPages;
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Balloon thread started....\n");
 
     for (;;)
     {
-        status = KeWaitForSingleObject(&devCtx->WakeUpThread, Executive, KernelMode, FALSE, NULL);
-        if (STATUS_WAIT_0 == status)
-        {
-            if (devCtx->bShutDown)
-            {
-                TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Exiting Thread!\n");
-                break;
-            }
-            else
-            {
-                diff = BalloonGetSize(Device);
-                if (diff > 0)
-                {
-                    status = BalloonFill(Device, (size_t)(diff));
-                }
-                else if (diff < 0)
-                {
-                    status = BalloonLeak(Device, (size_t)(-diff));
-                }
+        waitObjects[0] = &devCtx->WakeUpThread;
+        waitCount = 1;
 
-                if (status == STATUS_TIMEOUT || status == STATUS_NO_MORE_ENTRIES)
+#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
+        if (devCtx->bDeflateOnOOM && devCtx->evLowMem && devCtx->num_pages > 0)
+        {
+            waitObjects[1] = devCtx->evLowMem;
+            waitCount = 2;
+        }
+#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
+
+        status = KeWaitForMultipleObjects(waitCount, waitObjects, WaitAny, Executive, KernelMode, FALSE, NULL, NULL);
+        if ((status != STATUS_WAIT_0) && (status != STATUS_WAIT_1))
+        {
+            TraceEvents(TRACE_LEVEL_WARNING, DBG_PNP, "Worker wait failed with status 0x%08x\n", status);
+            continue;
+        }
+
+        if (devCtx->bShutDown)
+        {
+            TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Exiting Thread!\n");
+            break;
+        }
+
+        lowMem = FALSE;
+#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
+        lowMem = devCtx->bDeflateOnOOM && IsLowMemory(Device);
+#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
+
+        if (lowMem)
+        {
+            InterlockedExchange(&devCtx->bNeedResize, FALSE);
+
+            if (devCtx->num_pages > 0)
+            {
+                leakPages = min((size_t)devCtx->num_pages, (size_t)VIRTIO_BALLOON_OOM_NR_PAGES);
+
+                TraceEvents(TRACE_LEVEL_WARNING,
+                            DBG_HW_ACCESS,
+                            "Low memory, deflating balloon by %lu pages (current: %d)\n",
+                            (ULONG)leakPages,
+                            devCtx->num_pages);
+
+                status = BalloonLeak(Device, leakPages);
+                if (!NT_SUCCESS(status))
                 {
-                    TraceEvents(TRACE_LEVEL_WARNING, DBG_HW_ACCESS, "Failed to inform the host\n");
-                    if (diff != 0)
-                    {
-                        TraceEvents(TRACE_LEVEL_WARNING, DBG_HW_ACCESS, "Operation is in progress, continuing\n");
-                        KeSetEvent(&devCtx->WakeUpThread, IO_NO_INCREMENT, FALSE);
-                    }
+                    TraceEvents(TRACE_LEVEL_WARNING,
+                                DBG_HW_ACCESS,
+                                "Low-memory deflate failed with status 0x%08x\n",
+                                status);
                 }
 
                 BalloonSetSize(Device, devCtx->num_pages);
             }
+
+            continue;
         }
+
+        if (!InterlockedCompareExchange(&devCtx->bNeedResize, FALSE, FALSE))
+        {
+            continue;
+        }
+
+        diff = BalloonGetSize(Device);
+        if (diff > 0)
+        {
+            status = BalloonFill(Device, (size_t)(diff));
+        }
+        else if (diff < 0)
+        {
+            status = BalloonLeak(Device, (size_t)(-diff));
+        }
+        else
+        {
+            status = STATUS_SUCCESS;
+            InterlockedExchange(&devCtx->bNeedResize, FALSE);
+        }
+
+        if (status == STATUS_TIMEOUT || status == STATUS_NO_MORE_ENTRIES)
+        {
+            TraceEvents(TRACE_LEVEL_WARNING, DBG_HW_ACCESS, "Failed to inform the host\n");
+            if (diff != 0)
+            {
+                TraceEvents(TRACE_LEVEL_WARNING, DBG_HW_ACCESS, "Operation is in progress, continuing\n");
+                KeSetEvent(&devCtx->WakeUpThread, IO_NO_INCREMENT, FALSE);
+            }
+        }
+
+        BalloonSetSize(Device, devCtx->num_pages);
     }
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Thread about to exit...\n");
 
