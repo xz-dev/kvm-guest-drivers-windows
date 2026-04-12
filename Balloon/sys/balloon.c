@@ -75,7 +75,6 @@ BalloonInit(IN WDFOBJECT WdfDevice)
         nvqs = 2;
     }
 
-#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
     if (devCtx->evLowMem && virtio_is_feature_enabled(u64HostFeatures, VIRTIO_BALLOON_F_DEFLATE_ON_OOM))
     {
         TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Enable deflate-on-OOM feature.\n");
@@ -83,7 +82,6 @@ BalloonInit(IN WDFOBJECT WdfDevice)
         virtio_feature_enable(u64GuestFeatures, VIRTIO_BALLOON_F_DEFLATE_ON_OOM);
         devCtx->bDeflateOnOOM = TRUE;
     }
-#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
 
     status = VirtIOWdfSetDriverFeatures(&devCtx->VDevice, u64GuestFeatures, 0);
     if (NT_SUCCESS(status))
@@ -211,8 +209,7 @@ BalloonFill(IN WDFOBJECT WdfDevice, IN size_t num)
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-#ifndef BALLOON_INFLATE_IGNORE_LOWMEM
-    if (IsLowMemory(WdfDevice))
+    if (ctx->bDeflateOnOOM && IsLowMemory(WdfDevice))
     {
         TraceEvents(TRACE_LEVEL_WARNING,
                     DBG_HW_ACCESS,
@@ -223,7 +220,6 @@ BalloonFill(IN WDFOBJECT WdfDevice, IN size_t num)
         ExFreePool(pPageMdl);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-#endif // !BALLOON_INFLATE_IGNORE_LOWMEM
 
     pNewPageListEntry->PageMdl = pPageMdl;
     PushEntryList(&ctx->PageListHead, &(pNewPageListEntry->SingleListEntry));
